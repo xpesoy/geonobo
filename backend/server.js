@@ -126,6 +126,10 @@ io.on('connection', (socket) => {
     room.eliminatedPlayers = [];
     room.playerScores = {};
     
+    // 게임 시작 이벤트 발송 (추가된 부분)
+    io.to(roomId).emit('gameStarted');
+    console.log(`게임 시작 이벤트 전송: ${roomId}`);
+    
     // 첫 라운드 시작
     await startRound(room);
     
