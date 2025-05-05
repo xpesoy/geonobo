@@ -9,8 +9,8 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
   const viewerRef = useRef(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
-  const timerRef = useRef(null);
-  const errorRetryCount = useRef(0);
+  const timeoutRef = useRef(null);
+  const currentImageIdRef = useRef(null); // 현재 로드된 이미지 ID 추적
   const navigate = useNavigate();
 
   // 토큰 유효성 확인 헬퍼 함수
@@ -19,38 +19,87 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
     const expiresAt = localStorage.getItem('mapillary_token_expires_at');
     
     if (!token) {
+      console.log('토큰이 없습니다.');
       return false;
     }
     
     if (expiresAt) {
       const expiry = parseInt(expiresAt, 10);
       if (Date.now() > expiry) {
+        console.log('토큰이 만료되었습니다.');
         return false;
       }
     }
     
+    console.log('유효한 토큰이 있습니다.');
     return true;
   };
 
-  useEffect(() => {
-    console.log('MapillaryViewer 마운트, imageId:', imageId);
+  // 이미지 로드 실패 시 새 이미지 요청 로직
+  const requestNewImage = () => {
+    console.log('새 이미지 요청 중...');
     
-    if (!imageId || !containerRef.current) {
-      console.log('imageId 또는 컨테이너가 없습니다.');
+    // 로컬 스토리지에서 액세스 토큰 가져오기
+    const accessToken = localStorage.getItem('mapillary_access_token');
+    
+    if (!accessToken) {
+      console.error('인증 토큰이 없습니다.');
+      setError('Mapillary 인증이 필요합니다.');
+      setLoading(false);
       return;
     }
+    
+    // 서버에서 새 이미지 요청
+    fetch(`http://localhost:5000/api/mapillary/fallback-image?accessToken=${encodeURIComponent(accessToken)}`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`API 요청 실패: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.imageId) {
+          console.log(`새 이미지 ID로 재시도: ${data.imageId}`);
+          // 부모 컴포넌트에 새 이미지 ID 전달
+          if (onImageLoad) {
+            onImageLoad({ image: { id: data.imageId } });
+          }
+        } else {
+          throw new Error('서버에서 유효한 이미지 ID를 제공하지 않았습니다.');
+        }
+      })
+      .catch(err => {
+        console.error('새 이미지 요청 실패:', err);
+        setError('새 이미지를 가져올 수 없습니다. 페이지를 새로고침 해주세요.');
+        setLoading(false);
+      });
+  };
 
-    // 로딩 상태 초기화
+  // 뷰어 초기화 함수
+  const initializeViewer = () => {
+    if (!containerRef.current || !imageId) {
+      console.log('컨테이너나 이미지 ID가 없습니다.');
+      return;
+    }
+    
+    // 이미 로드된 동일한 이미지라면 재로드 방지
+    if (viewerRef.current && currentImageIdRef.current === imageId) {
+      console.log('이미 로드된 이미지입니다:', imageId);
+      return;
+    }
+    
+    // 로딩 상태 설정
     setLoading(true);
     setError(null);
     
-    // 이전 타이머 제거
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
+    // 이전 타이머 정리
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
     }
-
+    
     // 이전 뷰어 제거
     if (viewerRef.current) {
+      console.log('이전 뷰어 제거 중...');
       try {
         viewerRef.current.remove();
         viewerRef.current = null;
@@ -58,69 +107,58 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
         console.error('이전 뷰어 제거 중 오류:', err);
       }
     }
-
-    // 타임아웃 설정 - 20초 이내에 로드되지 않으면 오류 표시
-    timerRef.current = setTimeout(() => {
+    
+    // 타임아웃 설정
+    timeoutRef.current = setTimeout(() => {
       if (loading) {
         setError('이미지 로딩 시간이 초과되었습니다. 네트워크 연결을 확인하거나 다시 시도해주세요.');
         setLoading(false);
       }
     }, 20000);
-
+    
     // 컨테이너 초기화
     const container = containerRef.current;
     container.innerHTML = '';
-
+    
     // 토큰 유효성 확인
     if (!isTokenValid()) {
-      console.log('유효한 토큰이 없습니다. 인증 페이지로 이동합니다.');
+      console.log('유효한 토큰이 없습니다.');
       setError('Mapillary 인증이 필요하거나 만료되었습니다. 다시 로그인해주세요.');
       setLoading(false);
-      clearTimeout(timerRef.current);
-      
-      // 현재 경로 저장
+      clearTimeout(timeoutRef.current);
       localStorage.setItem('auth_return_path', window.location.pathname);
       return;
     }
-
+    
     // 액세스 토큰 가져오기
     const accessToken = localStorage.getItem('mapillary_access_token');
     
     try {
-      console.log('Mapillary Viewer 생성 시도:', {
-        accessToken: accessToken.substring(0, 10) + '...',
-        imageId
-      });
+      console.log('새 뷰어 생성 중, 이미지 ID:', imageId);
       
-      // 뷰어 옵션 - Bearer 토큰 사용
+      // 뷰어 옵션
       const viewerOptions = {
         accessToken,
         container,
-        imageId,
-        component: {
-          cover: true,
-          direction: false,
-          sequence: false,
-          zoom: true
-        }
+        imageId
       };
       
-      // 새 뷰어 생성
+      // 뷰어 생성
       viewerRef.current = new Viewer(viewerOptions);
+      currentImageIdRef.current = imageId;
       
       // 이미지 로드 이벤트
-      viewerRef.current.on('image', (e) => {
-        console.log('Mapillary 이미지 로드 성공:', e.image.id);
+      viewerRef.current.on('image', (event) => {
+        console.log('이미지 로드됨:', event.image.id);
         setLoading(false);
-        clearTimeout(timerRef.current);
-        errorRetryCount.current = 0; // 성공 시 재시도 카운트 초기화
+        clearTimeout(timeoutRef.current);
         
         if (onImageLoad) {
-          onImageLoad(e);
+          onImageLoad(event);
         }
       });
-
-      // 에러 처리
+      
+      // 에러 이벤트
       viewerRef.current.on('error', (error) => {
         console.error('Mapillary 에러:', error);
         
@@ -135,56 +173,37 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
           localStorage.removeItem('mapillary_access_token');
           localStorage.removeItem('mapillary_token_expires_at');
           
-          // 현재 경로 저장
-          localStorage.setItem('auth_return_path', window.location.pathname);
-          
-          clearTimeout(timerRef.current);
+          clearTimeout(timeoutRef.current);
           setLoading(false);
           return;
         }
         
-        // 이미지 ID 오류인 경우 새 이미지 요청
-        if (error.message && (
-            error.message.includes('Non existent cover key') || 
-            error.message.includes('not found')
-          ) && errorRetryCount.current < 3) {
-          setError(`이미지 ID ${imageId}를 찾을 수 없습니다. 다른 이미지를 시도합니다...`);
-          errorRetryCount.current += 1;
-          
-          // 서버에 새 이미지 요청
-          fetch('/api/mapillary/fallback-image')
-            .then(response => response.json())
-            .then(data => {
-              if (data.imageId) {
-                console.log(`새 이미지 ID로 재시도: ${data.imageId}`);
-                // 부모 컴포넌트에 새 이미지 ID 전달
-                if (onImageLoad) {
-                  onImageLoad({ image: { id: data.imageId } });
-                }
-              }
-            })
-            .catch(err => {
-              console.error('새 이미지 요청 실패:', err);
-              setError('이미지를 로드할 수 없습니다. 페이지를 새로고침 해주세요.');
-              setLoading(false);
-            });
-        } else {
-          setError(`이미지를 로드할 수 없습니다: ${error.message || '알 수 없는 오류'}`);
-          setLoading(false);
-        }
-        
-        clearTimeout(timerRef.current);
+        // 기타 오류 처리
+        setError(`이미지를 로드할 수 없습니다: ${error.message || '알 수 없는 오류'}`);
+        setLoading(false);
+        clearTimeout(timeoutRef.current);
       });
-
+      
     } catch (error) {
       console.error('Mapillary 뷰어 초기화 오류:', error);
       setError(`초기화 오류: ${error.message}`);
       setLoading(false);
-      clearTimeout(timerRef.current);
+      clearTimeout(timeoutRef.current);
     }
+  };
 
+  // 이미지 ID가 변경되면 뷰어 초기화
+  useEffect(() => {
+    console.log('imageId 변경됨:', imageId);
+    if (imageId) {
+      initializeViewer();
+    }
+    
     return () => {
-      clearTimeout(timerRef.current);
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      
       if (viewerRef.current) {
         try {
           viewerRef.current.remove();
@@ -194,7 +213,7 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
         }
       }
     };
-  }, [imageId, onImageLoad, navigate, loading]);
+  }, [imageId]); // imageId만 의존성으로 설정
 
   const handleAuth = () => {
     localStorage.setItem('auth_return_path', window.location.pathname);
@@ -242,29 +261,20 @@ const MapillaryViewer = ({ imageId, onImageLoad }) => {
               <div className="mt-4 text-center">
                 <button 
                   className="bg-red-500 hover:bg-red-600 text-white py-1 px-3 rounded text-sm"
-                  onClick={() => {
-                    // 서버에서 새 이미지 ID 요청
-                    fetch('/api/mapillary/fallback-image')
-                      .then(response => response.json())
-                      .then(data => {
-                        if (data.imageId) {
-                          // 부모 컴포넌트에 새 이미지 ID 전달
-                          if (onImageLoad) {
-                            onImageLoad({ image: { id: data.imageId } });
-                          }
-                        }
-                      })
-                      .catch(err => {
-                        console.error('새 이미지 요청 실패:', err);
-                        // 페이지 새로고침
-                        window.location.reload();
-                      });
-                  }}
+                  onClick={requestNewImage}
                 >
                   다른 이미지로 시도
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      
+      {!loading && !error && (
+        <div className="absolute bottom-4 left-4 right-4 flex justify-center">
+          <div className="bg-black bg-opacity-50 text-white text-sm px-3 py-1 rounded-lg">
+            <p>마우스 드래그로 360° 회전, 마우스 휠로 확대/축소</p>
           </div>
         </div>
       )}

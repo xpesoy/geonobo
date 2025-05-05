@@ -6,8 +6,14 @@ const mapillaryService = require('./utils/mapillaryUtils');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || "http://localhost:3000",
+  credentials: true
+}));
+
+// 중요: JSON 본문 파서 미들웨어 추가
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -16,6 +22,10 @@ const io = socketIO(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// Mapillary 라우터 등록
+const mapillaryRoutes = require('./routes/mapillary');
+app.use('/api/mapillary', mapillaryRoutes);
 
 // 게임방 관리
 const rooms = {};
@@ -176,11 +186,30 @@ io.on('connection', (socket) => {
   });
 });
 
-// 새로운 라운드 시작
+// 새로운 라// backend/server.js의 startRound 함수만 수정
 async function startRound(room) {
   try {
-    // Mapillary에서 랜덤 위치 가져오기
-    const location = await mapillaryService.getRandomLocation();
+    // 최대 3번까지 시도
+    let attempts = 0;
+    let location = null;
+    
+    while (attempts < 3 && !location) {
+      try {
+        attempts++;
+        console.log(`라운드 ${room.currentRound} 위치 가져오기 시도 ${attempts}...`);
+        // Mapillary에서 랜덤 위치 가져오기 (파노라마만)
+        location = await mapillaryService.getRandomLocation();
+      } catch (error) {
+        console.error(`시도 ${attempts} 실패:`, error);
+        if (attempts >= 3) throw error;
+      }
+    }
+    
+    if (!location) {
+      throw new Error('유효한 위치를 찾을 수 없습니다.');
+    }
+    
+    console.log(`라운드 ${room.currentRound} 위치 선택됨: ${location.imageId}`);
     
     room.currentLocation = location;
     room.roundStartTime = Date.now();

@@ -1,5 +1,5 @@
 // frontend/src/components/game/GamePlay.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSocket } from '../../context/SocketContext';
 import MapillaryViewer from './MapillaryViewer';
@@ -26,8 +26,13 @@ const GamePlay = () => {
   const [roundResult, setRoundResult] = useState(null);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [error, setError] = useState('');
-
+  const timerRef = useRef(null);
+  const gameInitialized = useRef(false);
+  
+  // 초기 게임 데이터 로드
   useEffect(() => {
+    if (gameInitialized.current) return;
+    
     if (!socket) {
       console.error('소켓 연결이 없습니다.');
       setError('서버 연결에 문제가 있습니다. 다시 시도해주세요.');
@@ -35,7 +40,7 @@ const GamePlay = () => {
     }
 
     console.log('GamePlay 컴포넌트 마운트, roomId:', roomId);
-
+    
     // 게임 이벤트 리스너 등록
     socket.on('roundStart', handleRoundStart);
     socket.on('roundEnd', handleRoundEnd);
@@ -43,27 +48,67 @@ const GamePlay = () => {
     socket.on('gameError', handleGameError);
     socket.on('playerSubmitted', handlePlayerSubmitted);
 
-    // 임시 테스트용 게임 상태 설정 (API 문제 디버깅 동안 사용)
-    setGameState(prev => ({
-      ...prev,
-      status: 'playing',
-      currentRound: 1,
-      maxRounds: 5,
-      imageId: '1044139606487936', // 테스트용 이미지 ID
-      timeLeft: 90,
-      players: [{ id: 'test1', username: '테스트유저1' }]
-    }));
-
-    // 타이머 시작
-    const timer = setInterval(() => {
-      setGameState(prev => {
-        if (prev.timeLeft <= 1) {
-          clearInterval(timer);
-          return { ...prev, timeLeft: 0 };
+    // 액세스 토큰 확인
+    const accessToken = localStorage.getItem('mapillary_access_token');
+  
+    if (!accessToken) {
+      console.log('Mapillary 인증이 필요합니다.');
+      setError('게임을 시작하기 위해 Mapillary 인증이 필요합니다. 로그인해주세요.');
+      return;
+    }
+    
+    // 기본 이미지 ID 설정
+    const defaultImageId = "315004160190383";
+    
+    // 서버에서 이미지 ID 가져오기
+    fetch(`http://localhost:5000/api/mapillary/fallback-image?accessToken=${encodeURIComponent(accessToken)}`)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`API 요청 실패: ${response.status}`);
         }
-        return { ...prev, timeLeft: prev.timeLeft - 1 };
+        return response.json();
+      })
+      .then(data => {
+        if (data.imageId) {
+          console.log('이미지 ID 가져옴:', data.imageId);
+          gameInitialized.current = true;
+          
+          setGameState(prev => ({
+            ...prev,
+            status: 'playing',
+            currentRound: 1,
+            maxRounds: 5,
+            imageId: data.imageId,
+            timeLeft: 90,
+            players: [{ id: 'test1', username: '테스트유저1' }]
+          }));
+          
+          // 타이머 시작
+          startTimer();
+        } else {
+          throw new Error('유효한 이미지 ID가 없습니다.');
+        }
+      })
+      .catch(err => {
+        console.error('이미지 요청 실패:', err);
+        
+        // 오류 시 기본 이미지로 설정
+        console.log('기본 이미지 ID 사용:', defaultImageId);
+        gameInitialized.current = true;
+        
+        setGameState(prev => ({
+          ...prev,
+          status: 'playing',
+          currentRound: 1,
+          maxRounds: 5,
+          imageId: defaultImageId,
+          timeLeft: 90,
+          players: [{ id: 'test1', username: '테스트유저1' }]
+        }));
+        
+        // 타이머 시작
+        startTimer();
       });
-    }, 1000);
 
     // 이미 방에 입장한 상태임을 서버에 알림
     socket.emit('requestRoomInfo', roomId);
@@ -75,12 +120,31 @@ const GamePlay = () => {
       socket.off('gameEnd');
       socket.off('gameError');
       socket.off('playerSubmitted');
-      clearInterval(timer); // 타이머 정리
+      clearInterval(timerRef.current); // 타이머 정리
     };
-  }, [socket, roomId]);
+  }, [socket, roomId, navigate]);
+
+  // 타이머 시작 함수
+  const startTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    
+    timerRef.current = setInterval(() => {
+      setGameState(prev => {
+        if (prev.timeLeft <= 1) {
+          clearInterval(timerRef.current);
+          return { ...prev, timeLeft: 0 };
+        }
+        return { ...prev, timeLeft: prev.timeLeft - 1 };
+      });
+    }, 1000);
+  };
 
   const handleRoundStart = (data) => {
     console.log('라운드 시작 이벤트 수신:', data);
+    clearInterval(timerRef.current);
+    
     setGameState(prev => ({
       ...prev,
       status: 'playing',
@@ -90,27 +154,19 @@ const GamePlay = () => {
       timeLeft: data.timeLimit,
       players: data.activePlayers
     }));
+    
     setPlayerGuess(null);
     setRoundResult(null);
     setIsSubmitted(false);
     
     // 타이머 시작
-    const timer = setInterval(() => {
-      setGameState(prev => {
-        if (prev.timeLeft <= 1) {
-          clearInterval(timer);
-          return { ...prev, timeLeft: 0 };
-        }
-        return { ...prev, timeLeft: prev.timeLeft - 1 };
-      });
-    }, 1000);
-
-    // 타이머 정리 (컴포넌트 언마운트나 다음 라운드 시작 시)
-    return () => clearInterval(timer);
+    startTimer();
   };
 
   const handleRoundEnd = (data) => {
     console.log('라운드 종료 이벤트 수신:', data);
+    clearInterval(timerRef.current);
+    
     setRoundResult(data);
     setGameState(prev => ({
       ...prev,
@@ -122,6 +178,8 @@ const GamePlay = () => {
 
   const handleGameEnd = (data) => {
     console.log('게임 종료 이벤트 수신:', data);
+    clearInterval(timerRef.current);
+    
     setGameState(prev => ({
       ...prev,
       status: 'ended',
@@ -166,12 +224,26 @@ const GamePlay = () => {
       return (
         <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4">
           <p>{error}</p>
-          <button 
-            onClick={() => navigate('/lobby')} 
-            className="mt-2 bg-red-500 hover:bg-red-600 text-white font-medium py-1 px-3 rounded"
-          >
-            로비로 돌아가기
-          </button>
+          <div className="flex mt-2 gap-2">
+            <button 
+              onClick={() => window.location.reload()}
+              className="bg-blue-500 hover:bg-blue-600 text-white font-medium py-1 px-3 rounded"
+            >
+              새로고침
+            </button>
+            <button 
+              onClick={() => navigate('/auth/mapillary/callback')}
+              className="bg-green-500 hover:bg-green-600 text-white font-medium py-1 px-3 rounded"
+            >
+              Mapillary 로그인
+            </button>
+            <button 
+              onClick={() => navigate('/lobby')} 
+              className="bg-red-500 hover:bg-red-600 text-white font-medium py-1 px-3 rounded"
+            >
+              로비로 돌아가기
+            </button>
+          </div>
         </div>
       );
     }
@@ -203,7 +275,7 @@ const GamePlay = () => {
     }
 
     if (roundResult) {
-      const playerResult = roundResult.guesses[socket.id];
+      const playerResult = roundResult.guesses[socket?.id];
       const correctLocation = roundResult.correctLocation;
       const distance = playerResult ? playerResult.distance : null;
 
@@ -248,6 +320,38 @@ const GamePlay = () => {
     );
   };
 
+  // 로딩 상태 표시
+  if (!gameState.imageId) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gray-800 text-white">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold mb-2">게임 초기화 중...</h2>
+          <p>파노라마 이미지를 불러오고 있습니다</p>
+          {error && (
+            <div className="mt-4 text-red-400 p-4 bg-red-900 bg-opacity-30 rounded">
+              <p>{error}</p>
+              <div className="mt-2">
+                <button 
+                  onClick={() => navigate('/auth/mapillary/callback')}
+                  className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-3 rounded text-sm mr-2"
+                >
+                  Mapillary 로그인
+                </button>
+                <button 
+                  onClick={() => navigate('/lobby')}
+                  className="bg-red-500 hover:bg-red-600 text-white py-1 px-3 rounded text-sm"
+                >
+                  로비로 돌아가기
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col">
       <div className="bg-gray-800 text-white p-4">
@@ -256,10 +360,13 @@ const GamePlay = () => {
       
       <div className="flex-1 flex flex-col md:flex-row">
         <div className="w-full md:w-1/2 h-1/2 md:h-full border-b md:border-r border-gray-300">
-          <MapillaryViewer 
-            imageId={gameState.imageId}
-            onImageLoad={(e) => console.log('이미지 로드됨:', e)}
-          />
+          {gameState.imageId && (
+            <MapillaryViewer 
+              key={gameState.imageId} // 키를 이미지 ID로 설정하여 새 이미지마다 컴포넌트 재생성
+              imageId={gameState.imageId}
+              onImageLoad={(e) => console.log('이미지 로드됨:', e)}
+            />
+          )}
         </div>
         
         <div className="w-full md:w-1/2 h-1/2 md:h-full">

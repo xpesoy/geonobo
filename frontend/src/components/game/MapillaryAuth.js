@@ -1,6 +1,7 @@
 // frontend/src/components/game/MapillaryAuth.js
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import axios from 'axios';
 
 const MapillaryAuth = () => {
   const [loading, setLoading] = useState(true);
@@ -24,31 +25,22 @@ const MapillaryAuth = () => {
       console.log('인증 코드 확인됨. 토큰 요청 중...');
       
       // 서버에 코드 전송하여 액세스 토큰 요청
-      fetch('/api/mapillary/token', {
-        method: 'POST',
+      // 수정: 백엔드 URL을 명시적으로 지정
+      axios.post('http://localhost:5000/api/mapillary/token', { code }, {
         headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ code }),
+          'Content-Type': 'application/json'
+        }
       })
       .then(response => {
-        if (!response.ok) {
-          return response.json().then(err => {
-            throw new Error(`서버 응답 오류: ${err.error || response.statusText}`);
-          });
-        }
-        return response.json();
-      })
-      .then(data => {
-        if (data.access_token) {
-          console.log('액세스 토큰 받음:', data.access_token.substring(0, 10) + '...');
+        if (response.data.access_token) {
+          console.log('액세스 토큰 받음:', response.data.access_token.substring(0, 10) + '...');
           
           // 로컬 스토리지에 액세스 토큰 저장
-          localStorage.setItem('mapillary_access_token', data.access_token);
+          localStorage.setItem('mapillary_access_token', response.data.access_token);
           
           // 토큰 만료 시간 저장 (만료 시간이 제공된 경우)
-          if (data.expires_in) {
-            const expiresAt = Date.now() + (data.expires_in * 1000);
+          if (response.data.expires_in) {
+            const expiresAt = Date.now() + (response.data.expires_in * 1000);
             localStorage.setItem('mapillary_token_expires_at', expiresAt.toString());
           }
           
@@ -63,8 +55,8 @@ const MapillaryAuth = () => {
         }
       })
       .catch(error => {
-        console.error('토큰 요청 오류:', error);
-        setError(`Mapillary 인증에 실패했습니다: ${error.message}`);
+        console.error('토큰 요청 오류:', error.response?.data || error.message);
+        setError(`Mapillary 인증에 실패했습니다: ${error.response?.data?.error || error.message}`);
         setLoading(false);
       });
     } else {
@@ -72,25 +64,6 @@ const MapillaryAuth = () => {
       setLoading(false);
     }
   }, [location.search, navigate]);
-
-  // 로그인 페이지로 리디렉션
-  const handleLogin = () => {
-    // 현재 경로 저장
-    const currentPath = location.pathname !== '/auth/mapillary/callback' 
-      ? location.pathname 
-      : '/lobby';
-    localStorage.setItem('auth_return_path', currentPath);
-    
-    // OAuth 2.0 인증 요청 파라미터 설정
-    const clientId = '9938378606184477';
-    const redirectUri = encodeURIComponent(window.location.origin + '/auth/mapillary/callback');
-    const scope = 'user:read';
-    const responseType = 'code';
-    
-    // 인증 URL로 리디렉션
-    const authUrl = `https://graph.mapillary.com/connect?client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=${responseType}`;
-    window.location.href = authUrl;
-  };
 
   // 토큰 상태 확인 헬퍼 함수
   const checkTokenStatus = () => {
@@ -113,6 +86,25 @@ const MapillaryAuth = () => {
     }
     
     return '인증됨';
+  };
+
+  // 로그인 페이지로 리디렉션
+  const handleLogin = () => {
+    // 현재 경로 저장
+    const currentPath = location.pathname !== '/auth/mapillary/callback' 
+      ? location.pathname 
+      : '/lobby';
+    localStorage.setItem('auth_return_path', currentPath);
+    
+    // OAuth 2.0 인증 요청 파라미터 설정
+    const clientId = '9938378606184477';
+    const redirectUri = encodeURIComponent(window.location.origin + '/auth/mapillary/callback');
+    const scope = 'user:read';
+    const responseType = 'code';
+    
+    // 인증 URL로 리디렉션
+    const authUrl = `https://www.mapillary.com/connect?client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=${responseType}`;
+    window.location.href = authUrl;
   };
 
   if (loading) {
