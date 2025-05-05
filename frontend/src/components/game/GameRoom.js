@@ -32,7 +32,7 @@ const GameRoom = () => {
 
     socket.on('gameStarted', () => {
       console.log(`gameStarted 이벤트 수신: ${roomId}`);
-      navigate(`/game/${roomId}`);
+      navigate(`/play/${roomId}`);
       console.log('navigate 함수 호출 완료');
     });
 
